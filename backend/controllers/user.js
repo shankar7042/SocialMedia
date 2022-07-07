@@ -78,3 +78,73 @@ exports.login = async (req, res) => {
         });
     }
 };
+
+exports.logout = (req, res) => {
+    try {
+        return res
+            .status(200)
+            .cookie("token", null, {
+                expires: new Date(Date.now()),
+                httpOnly: true,
+            })
+            .json({
+                success: true,
+                message: "Logged out",
+            });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
+exports.followUser = async (req, res) => {
+    try {
+        const userToFollow = await User.findById(req.params.id);
+        const loggedInUser = await User.findById(req.userId);
+
+        if (!userToFollow) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found",
+            });
+        }
+
+        if (loggedInUser.following.includes(userToFollow._id)) {
+            const followingIndex = loggedInUser.following.indexOf(
+                userToFollow._id
+            );
+            loggedInUser.following.splice(followingIndex, 1);
+
+            const followerIndex = userToFollow.followers.indexOf(
+                loggedInUser._id
+            );
+            userToFollow.followers.splice(followerIndex, 1);
+
+            await loggedInUser.save();
+            await userToFollow.save();
+
+            return res.status(200).json({
+                success: true,
+                message: "User Unfollowed",
+            });
+        } else {
+            loggedInUser.following.push(userToFollow._id);
+            userToFollow.followers.push(loggedInUser._id);
+
+            await loggedInUser.save();
+            await userToFollow.save();
+
+            return res.status(200).json({
+                suceess: true,
+                message: "User followed",
+            });
+        }
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};

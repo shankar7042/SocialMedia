@@ -96,3 +96,23 @@ exports.likeAndUnlikePost = async (req, res) => {
         });
     }
 };
+
+exports.getPostOfFollowing = async (req, res) => {
+    try {
+        const loggedInUser = await User.findById(req.userId);
+        const posts = await Post.find({
+            owner: {
+                $in: loggedInUser.following,
+            },
+        });
+        return res.status(200).json({
+            success: true,
+            posts,
+        });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
