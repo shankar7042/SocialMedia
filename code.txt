@@ -1,0 +1,4935 @@
+*************************************************************
+File Name: .\.gitIgnore 
+*************************************************************
+
+/node_modules
+/backend/config/config.env
+/frontend/node_modules
+/frontend/.pnp
+/frontend/.pnp.js
+
+/frontend/coverage
+
+/frontend/build
+
+/frontend/.DS_Store
+/frontend/.env.local
+/frontend/.env.development.local
+/frontend/.env.test.local
+/frontend/.env.production.local
+
+
+
+
+*************************************************************
+File Name: .\package.json 
+*************************************************************
+
+{
+  "name": "mern-social",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon backend/server.js",
+    "heroku-postbuild": "NPM_CONFIG_PRODUCTION=false && npm install --prefix frontend && npm run build --prefix frontend"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^5.0.1",
+    "cloudinary": "^1.28.1",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^11.0.0",
+    "express": "^4.17.2",
+    "jsonwebtoken": "^8.5.1",
+    "mongoose": "^6.1.6",
+    "nodemailer": "^6.7.2"
+  }
+}
+
+
+
+*************************************************************
+File Name: .\Procfile 
+*************************************************************
+
+web: node backend/server.js
+
+
+*************************************************************
+File Name: .\backend\app.js 
+*************************************************************
+
+const express = require("express");
+const app = express();
+const cookieParser = require("cookie-parser");
+const path = require("path");
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config({ path: "backend/config/config.env" });
+}
+
+// Using Middlewares
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.use(cookieParser());
+
+// Importing Routes
+const post = require("./routes/post");
+const user = require("./routes/user");
+
+// Using Routes
+app.use("/api/v1", post);
+app.use("/api/v1", user);
+
+app.use(express.static(path.join(__dirname, "../frontend/build")));
+
+app.get("*", (req, res) => {
+  res.sendFile(path.resolve(__dirname, "../frontend/build/index.html"));
+});
+
+module.exports = app;
+
+
+
+*************************************************************
+File Name: .\backend\server.js 
+*************************************************************
+
+const app = require("./app");
+const { connectDatabase } = require("./config/database");
+const cloudinary = require("cloudinary");
+connectDatabase();
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+app.listen(process.env.PORT, () => {
+  console.log(`Server is running on port ${process.env.PORT}`);
+});
+
+
+
+*************************************************************
+File Name: .\backend\config\database.js 
+*************************************************************
+
+const mongoose = require("mongoose");
+
+exports.connectDatabase = () => {
+  mongoose
+    .connect(process.env.MONGO_URI)
+    .then((con) => console.log(`Database Connected: ${con.connection.host}`))
+    .catch((err) => console.log(err));
+};
+
+
+
+*************************************************************
+File Name: .\backend\controllers\post.js 
+*************************************************************
+
+const Post = require("../models/Post");
+const User = require("../models/User");
+const cloudinary = require("cloudinary");
+exports.createPost = async (req, res) => {
+  try {
+    const myCloud = await cloudinary.v2.uploader.upload(req.body.image, {
+      folder: "posts",
+    });
+    const newPostData = {
+      caption: req.body.caption,
+      image: {
+        public_id: myCloud.public_id,
+        url: myCloud.secure_url,
+      },
+      owner: req.user._id,
+    };
+
+    const post = await Post.create(newPostData);
+
+    const user = await User.findById(req.user._id);
+
+    user.posts.unshift(post._id);
+
+    await user.save();
+    res.status(201).json({
+      success: true,
+      message: "Post created",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.deletePost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    if (post.owner.toString() !== req.user._id.toString()) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    await cloudinary.v2.uploader.destroy(post.image.public_id);
+
+    await post.remove();
+
+    const user = await User.findById(req.user._id);
+
+    const index = user.posts.indexOf(req.params.id);
+    user.posts.splice(index, 1);
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Post deleted",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.likeAndUnlikePost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    if (post.likes.includes(req.user._id)) {
+      const index = post.likes.indexOf(req.user._id);
+
+      post.likes.splice(index, 1);
+
+      await post.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Post Unliked",
+      });
+    } else {
+      post.likes.push(req.user._id);
+
+      await post.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Post Liked",
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getPostOfFollowing = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    const posts = await Post.find({
+      owner: {
+        $in: user.following,
+      },
+    }).populate("owner likes comments.user");
+
+    res.status(200).json({
+      success: true,
+      posts: posts.reverse(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updateCaption = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    if (post.owner.toString() !== req.user._id.toString()) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    post.caption = req.body.caption;
+    await post.save();
+    res.status(200).json({
+      success: true,
+      message: "Post updated",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.commentOnPost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    let commentIndex = -1;
+
+    // Checking if comment already exists
+
+    post.comments.forEach((item, index) => {
+      if (item.user.toString() === req.user._id.toString()) {
+        commentIndex = index;
+      }
+    });
+
+    if (commentIndex !== -1) {
+      post.comments[commentIndex].comment = req.body.comment;
+
+      await post.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Comment Updated",
+      });
+    } else {
+      post.comments.push({
+        user: req.user._id,
+        comment: req.body.comment,
+      });
+
+      await post.save();
+      return res.status(200).json({
+        success: true,
+        message: "Comment added",
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.deleteComment = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    // Checking If owner wants to delete
+
+    if (post.owner.toString() === req.user._id.toString()) {
+      if (req.body.commentId === undefined) {
+        return res.status(400).json({
+          success: false,
+          message: "Comment Id is required",
+        });
+      }
+
+      post.comments.forEach((item, index) => {
+        if (item._id.toString() === req.body.commentId.toString()) {
+          return post.comments.splice(index, 1);
+        }
+      });
+
+      await post.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Selected Comment has deleted",
+      });
+    } else {
+      post.comments.forEach((item, index) => {
+        if (item.user.toString() === req.user._id.toString()) {
+          return post.comments.splice(index, 1);
+        }
+      });
+
+      await post.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Your Comment has deleted",
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+
+*************************************************************
+File Name: .\backend\controllers\user.js 
+*************************************************************
+
+const User = require("../models/User");
+const Post = require("../models/Post");
+const { sendEmail } = require("../middlewares/sendEmail");
+const crypto = require("crypto");
+const cloudinary = require("cloudinary");
+
+exports.register = async (req, res) => {
+  try {
+    const { name, email, password, avatar } = req.body;
+
+    let user = await User.findOne({ email });
+    if (user) {
+      return res
+        .status(400)
+        .json({ success: false, message: "User already exists" });
+    }
+
+    const myCloud = await cloudinary.v2.uploader.upload(avatar, {
+      folder: "avatars",
+    });
+
+    user = await User.create({
+      name,
+      email,
+      password,
+      avatar: { public_id: myCloud.public_id, url: myCloud.secure_url },
+    });
+
+    const token = await user.generateToken();
+
+    const options = {
+      expires: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      httpOnly: true,
+    };
+
+    res.status(201).cookie("token", token, options).json({
+      success: true,
+      user,
+      token,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email })
+      .select("+password")
+      .populate("posts followers following");
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "User does not exist",
+      });
+    }
+
+    const isMatch = await user.matchPassword(password);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        message: "Incorrect password",
+      });
+    }
+
+    const token = await user.generateToken();
+
+    const options = {
+      expires: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      httpOnly: true,
+    };
+
+    res.status(200).cookie("token", token, options).json({
+      success: true,
+      user,
+      token,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.logout = async (req, res) => {
+  try {
+    res
+      .status(200)
+      .cookie("token", null, { expires: new Date(Date.now()), httpOnly: true })
+      .json({
+        success: true,
+        message: "Logged out",
+      });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.followUser = async (req, res) => {
+  try {
+    const userToFollow = await User.findById(req.params.id);
+    const loggedInUser = await User.findById(req.user._id);
+
+    if (!userToFollow) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (loggedInUser.following.includes(userToFollow._id)) {
+      const indexfollowing = loggedInUser.following.indexOf(userToFollow._id);
+      const indexfollowers = userToFollow.followers.indexOf(loggedInUser._id);
+
+      loggedInUser.following.splice(indexfollowing, 1);
+      userToFollow.followers.splice(indexfollowers, 1);
+
+      await loggedInUser.save();
+      await userToFollow.save();
+
+      res.status(200).json({
+        success: true,
+        message: "User Unfollowed",
+      });
+    } else {
+      loggedInUser.following.push(userToFollow._id);
+      userToFollow.followers.push(loggedInUser._id);
+
+      await loggedInUser.save();
+      await userToFollow.save();
+
+      res.status(200).json({
+        success: true,
+        message: "User followed",
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updatePassword = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("+password");
+
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide old and new password",
+      });
+    }
+
+    const isMatch = await user.matchPassword(oldPassword);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        message: "Incorrect Old password",
+      });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Password Updated",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updateProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    const { name, email, avatar } = req.body;
+
+    if (name) {
+      user.name = name;
+    }
+    if (email) {
+      user.email = email;
+    }
+
+    if (avatar) {
+      await cloudinary.v2.uploader.destroy(user.avatar.public_id);
+
+      const myCloud = await cloudinary.v2.uploader.upload(avatar, {
+        folder: "avatars",
+      });
+      user.avatar.public_id = myCloud.public_id;
+      user.avatar.url = myCloud.secure_url;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Profile Updated",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.deleteMyProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    const posts = user.posts;
+    const followers = user.followers;
+    const following = user.following;
+    const userId = user._id;
+
+    // Removing Avatar from cloudinary
+    await cloudinary.v2.uploader.destroy(user.avatar.public_id);
+
+    await user.remove();
+
+    // Logout user after deleting profile
+
+    res.cookie("token", null, {
+      expires: new Date(Date.now()),
+      httpOnly: true,
+    });
+
+    // Delete all posts of the user
+    for (let i = 0; i < posts.length; i++) {
+      const post = await Post.findById(posts[i]);
+      await cloudinary.v2.uploader.destroy(post.image.public_id);
+      await post.remove();
+    }
+
+    // Removing User from Followers Following
+    for (let i = 0; i < followers.length; i++) {
+      const follower = await User.findById(followers[i]);
+
+      const index = follower.following.indexOf(userId);
+      follower.following.splice(index, 1);
+      await follower.save();
+    }
+
+    // Removing User from Following's Followers
+    for (let i = 0; i < following.length; i++) {
+      const follows = await User.findById(following[i]);
+
+      const index = follows.followers.indexOf(userId);
+      follows.followers.splice(index, 1);
+      await follows.save();
+    }
+
+    // removing all comments of the user from all posts
+    const allPosts = await Post.find();
+
+    for (let i = 0; i < allPosts.length; i++) {
+      const post = await Post.findById(allPosts[i]._id);
+
+      for (let j = 0; j < post.comments.length; j++) {
+        if (post.comments[j].user === userId) {
+          post.comments.splice(j, 1);
+        }
+      }
+      await post.save();
+    }
+    // removing all likes of the user from all posts
+
+    for (let i = 0; i < allPosts.length; i++) {
+      const post = await Post.findById(allPosts[i]._id);
+
+      for (let j = 0; j < post.likes.length; j++) {
+        if (post.likes[j] === userId) {
+          post.likes.splice(j, 1);
+        }
+      }
+      await post.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Profile Deleted",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.myProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate(
+      "posts followers following"
+    );
+
+    res.status(200).json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).populate(
+      "posts followers following"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find({
+      name: { $regex: req.query.name, $options: "i" },
+    });
+
+    res.status(200).json({
+      success: true,
+      users,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const user = await User.findOne({ email: req.body.email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const resetPasswordToken = user.getResetPasswordToken();
+
+    await user.save();
+
+    const resetUrl = `${req.protocol}://${req.get(
+      "host"
+    )}/password/reset/${resetPasswordToken}`;
+
+    const message = `Reset Your Password by clicking on the link below: \n\n ${resetUrl}`;
+
+    try {
+      await sendEmail({
+        email: user.email,
+        subject: "Reset Password",
+        message,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: `Email sent to ${user.email}`,
+      });
+    } catch (error) {
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save();
+
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const resetPasswordToken = crypto
+      .createHash("sha256")
+      .update(req.params.token)
+      .digest("hex");
+
+    const user = await User.findOne({
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Token is invalid or has expired",
+      });
+    }
+
+    user.password = req.body.password;
+
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Password Updated",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getMyPosts = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    const posts = [];
+
+    for (let i = 0; i < user.posts.length; i++) {
+      const post = await Post.findById(user.posts[i]).populate(
+        "likes comments.user owner"
+      );
+      posts.push(post);
+    }
+
+    res.status(200).json({
+      success: true,
+      posts,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getUserPosts = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    const posts = [];
+
+    for (let i = 0; i < user.posts.length; i++) {
+      const post = await Post.findById(user.posts[i]).populate(
+        "likes comments.user owner"
+      );
+      posts.push(post);
+    }
+
+    res.status(200).json({
+      success: true,
+      posts,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+
+*************************************************************
+File Name: .\backend\middlewares\auth.js 
+*************************************************************
+
+const User = require("../models/User");
+const jwt = require("jsonwebtoken");
+
+exports.isAuthenticated = async (req, res, next) => {
+  try {
+    const { token } = req.cookies;
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Please login first",
+      });
+    }
+
+    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+
+    req.user = await User.findById(decoded._id);
+
+    next();
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+
+
+*************************************************************
+File Name: .\backend\middlewares\sendEmail.js 
+*************************************************************
+
+const nodeMailer = require("nodemailer");
+
+exports.sendEmail = async (options) => {
+  const transporter = nodeMailer.createTransport({
+    host: "smtp.mailtrap.io",
+    port: 2525,
+    auth: {
+      user: "211d4679e3d79c",
+      pass: "9e2b7d43009e26",
+    },
+  });
+
+  const mailOptions = {
+    from: process.env.SMPT_MAIL,
+    to: options.email,
+    subject: options.subject,
+    text: options.message,
+  };
+
+  await transporter.sendMail(mailOptions);
+};
+
+
+
+*************************************************************
+File Name: .\backend\models\Post.js 
+*************************************************************
+
+const mongoose = require("mongoose");
+
+const postSchema = new mongoose.Schema({
+  caption: String,
+
+  image: {
+    public_id: String,
+    url: String,
+  },
+
+  owner: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  likes: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+
+  comments: [
+    {
+      user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      comment: {
+        type: String,
+        required: true,
+      },
+    },
+  ],
+});
+
+module.exports = mongoose.model("Post", postSchema);
+
+
+
+*************************************************************
+File Name: .\backend\models\User.js 
+*************************************************************
+
+const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: [true, "Please enter a name"],
+  },
+
+  avatar: {
+    public_id: String,
+    url: String,
+  },
+
+  email: {
+    type: String,
+    required: [true, "Please enter an email"],
+    unique: [true, "Email already exists"],
+  },
+  password: {
+    type: String,
+    required: [true, "Please enter a password"],
+    minlength: [6, "Password must be at least 6 characters"],
+    select: false,
+  },
+
+  posts: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Post",
+    },
+  ],
+  followers: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+
+  following: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+
+  resetPasswordToken: String,
+  resetPasswordExpire: Date,
+});
+
+userSchema.pre("save", async function (next) {
+  if (this.isModified("password")) {
+    this.password = await bcrypt.hash(this.password, 10);
+  }
+
+  next();
+});
+
+userSchema.methods.matchPassword = async function (password) {
+  return await bcrypt.compare(password, this.password);
+};
+
+userSchema.methods.generateToken = function () {
+  return jwt.sign({ _id: this._id }, process.env.JWT_SECRET);
+};
+
+userSchema.methods.getResetPasswordToken = function () {
+  const resetToken = crypto.randomBytes(20).toString("hex");
+
+  this.resetPasswordToken = crypto
+    .createHash("sha256")
+    .update(resetToken)
+    .digest("hex");
+  this.resetPasswordExpire = Date.now() + 10 * 60 * 1000;
+
+  return resetToken;
+};
+
+module.exports = mongoose.model("User", userSchema);
+
+
+
+*************************************************************
+File Name: .\backend\routes\post.js 
+*************************************************************
+
+const express = require("express");
+const {
+  createPost,
+  likeAndUnlikePost,
+  deletePost,
+  getPostOfFollowing,
+  updateCaption,
+  commentOnPost,
+  deleteComment,
+} = require("../controllers/post");
+const { isAuthenticated } = require("../middlewares/auth");
+
+const router = express.Router();
+
+router.route("/post/upload").post(isAuthenticated, createPost);
+
+router
+  .route("/post/:id")
+  .get(isAuthenticated, likeAndUnlikePost)
+  .put(isAuthenticated, updateCaption)
+  .delete(isAuthenticated, deletePost);
+
+router.route("/posts").get(isAuthenticated, getPostOfFollowing);
+
+router
+  .route("/post/comment/:id")
+  .put(isAuthenticated, commentOnPost)
+  .delete(isAuthenticated, deleteComment);
+
+module.exports = router;
+
+
+
+*************************************************************
+File Name: .\backend\routes\user.js 
+*************************************************************
+
+const express = require("express");
+const {
+  register,
+  login,
+  followUser,
+  logout,
+  updatePassword,
+  updateProfile,
+  deleteMyProfile,
+  myProfile,
+  getUserProfile,
+  getAllUsers,
+  forgotPassword,
+  resetPassword,
+  getMyPosts,
+  getUserPosts,
+} = require("../controllers/user");
+const { isAuthenticated } = require("../middlewares/auth");
+const router = express.Router();
+
+router.route("/register").post(register);
+
+router.route("/login").post(login);
+
+router.route("/logout").get(logout);
+
+router.route("/follow/:id").get(isAuthenticated, followUser);
+
+router.route("/update/password").put(isAuthenticated, updatePassword);
+
+router.route("/update/profile").put(isAuthenticated, updateProfile);
+
+router.route("/delete/me").delete(isAuthenticated, deleteMyProfile);
+router.route("/me").get(isAuthenticated, myProfile);
+
+router.route("/my/posts").get(isAuthenticated, getMyPosts);
+
+router.route("/userposts/:id").get(isAuthenticated, getUserPosts);
+
+router.route("/user/:id").get(isAuthenticated, getUserProfile);
+
+router.route("/users").get(isAuthenticated, getAllUsers);
+
+router.route("/forgot/password").post(forgotPassword);
+
+router.route("/password/reset/:token").put(resetPassword);
+
+module.exports = router;
+
+
+
+*************************************************************
+File Name: .\frontend\.gitignore 
+*************************************************************
+
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+
+# misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+
+*************************************************************
+File Name: .\frontend\package.json 
+*************************************************************
+
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@emotion/react": "^11.7.1",
+    "@emotion/styled": "^11.6.0",
+    "@mui/icons-material": "^5.4.1",
+    "@mui/material": "^5.4.1",
+    "@reduxjs/toolkit": "^1.7.2",
+    "@testing-library/jest-dom": "^5.16.2",
+    "@testing-library/react": "^12.1.2",
+    "@testing-library/user-event": "^13.5.0",
+    "axios": "^0.26.0",
+    "react": "^17.0.2",
+    "react-alert": "^7.0.3",
+    "react-alert-template-basic": "^1.0.2",
+    "react-dom": "^17.0.2",
+    "react-redux": "^7.2.6",
+    "react-router-dom": "^6.2.1",
+    "react-scripts": "5.0.0",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "proxy": "http://localhost:4000"
+}
+
+
+
+*************************************************************
+File Name: .\frontend\README.md 
+*************************************************************
+
+# Getting Started with Create React App
+
+This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+
+## Available Scripts
+
+In the project directory, you can run:
+
+### `npm start`
+
+Runs the app in the development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+
+The page will reload when you make changes.\
+You may also see any lint errors in the console.
+
+### `npm test`
+
+Launches the test runner in the interactive watch mode.\
+See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+
+### `npm run build`
+
+Builds the app for production to the `build` folder.\
+It correctly bundles React in production mode and optimizes the build for the best performance.
+
+The build is minified and the filenames include the hashes.\
+Your app is ready to be deployed!
+
+See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+
+### `npm run eject`
+
+**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+
+If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+
+Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+
+You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+
+## Learn More
+
+You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+
+To learn React, check out the [React documentation](https://reactjs.org/).
+
+### Code Splitting
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+
+### Analyzing the Bundle Size
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+
+### Making a Progressive Web App
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+
+### Advanced Configuration
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+
+### Deployment
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+
+### `npm run build` fails to minify
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+
+
+
+*************************************************************
+File Name: .\frontend\public\index.html 
+*************************************************************
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Web site created using create-react-app"
+    />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <!--
+      manifest.json provides metadata used when your web app is installed on a
+      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
+    -->
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap"
+    />
+    <title>React App</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <!--
+      This HTML file is a template.
+      If you open it directly in the browser, you will see an empty page.
+
+      You can add webfonts, meta tags, or analytics to this file.
+      The build step will place the bundled scripts into the <body> tag.
+
+      To begin the development, run `npm start` or `yarn start`.
+      To create a production bundle, use `npm run build` or `yarn build`.
+    -->
+  </body>
+</html>
+
+
+
+*************************************************************
+File Name: .\frontend\public\manifest.json 
+*************************************************************
+
+{
+  "short_name": "React App",
+  "name": "Create React App Sample",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}
+
+
+
+*************************************************************
+File Name: .\frontend\public\robots.txt 
+*************************************************************
+
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Disallow:
+
+
+
+*************************************************************
+File Name: .\frontend\src\App.css 
+*************************************************************
+
+* {
+  margin: 0%;
+  padding: 0%;
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\App.js 
+*************************************************************
+
+import "./App.css";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import Header from "./Components/Header/Header";
+import Login from "./Components/Login/Login";
+import { useDispatch, useSelector } from "react-redux";
+import { useEffect } from "react";
+import { loadUser } from "./Actions/User";
+import Home from "./Components/Home/Home";
+import Account from "./Components/Account/Account";
+import NewPost from "./Components/NewPost/NewPost";
+import Register from "./Components/Register/Register";
+import UpdateProfile from "./Components/UpdateProfile/UpdateProfile";
+import UpdatePassword from "./Components/UpdatePassword/UpdatePassword";
+import ForgotPassword from "./Components/ForgotPassword/ForgotPassword";
+import ResetPassword from "./Components/ResetPassword/ResetPassword";
+import UserProfile from "./Components/UserProfile/UserProfile";
+import Search from "./Components/Search/Search";
+import NotFound from "./Components/NotFound/NotFound";
+
+function App() {
+  const dispatch = useDispatch();
+  useEffect(() => {
+    dispatch(loadUser());
+  }, [dispatch]);
+
+  const { isAuthenticated } = useSelector((state) => state.user);
+
+  return (
+    <Router>
+      {isAuthenticated && <Header />}
+
+      <Routes>
+        <Route path="/" element={isAuthenticated ? <Home /> : <Login />} />
+        <Route
+          path="/account"
+          element={isAuthenticated ? <Account /> : <Login />}
+        />
+
+        <Route
+          path="/register"
+          element={isAuthenticated ? <Account /> : <Register />}
+        />
+
+        <Route
+          path="/newpost"
+          element={isAuthenticated ? <NewPost /> : <Login />}
+        />
+
+        <Route
+          path="/update/profile"
+          element={isAuthenticated ? <UpdateProfile /> : <Login />}
+        />
+        <Route
+          path="/update/password"
+          element={isAuthenticated ? <UpdatePassword /> : <Login />}
+        />
+
+        <Route
+          path="/forgot/password"
+          element={isAuthenticated ? <UpdatePassword /> : <ForgotPassword />}
+        />
+
+        <Route
+          path="/password/reset/:token"
+          element={isAuthenticated ? <UpdatePassword /> : <ResetPassword />}
+        />
+
+        <Route
+          path="/user/:id"
+          element={isAuthenticated ? <UserProfile /> : <Login />}
+        />
+
+        <Route path="search" element={<Search />} />
+
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+
+
+*************************************************************
+File Name: .\frontend\src\index.js 
+*************************************************************
+
+import React from "react";
+import ReactDOM from "react-dom";
+import App from "./App";
+import { Provider } from "react-redux";
+import store from "./store";
+import { Provider as AlertProvider, positions, transitions } from "react-alert";
+import AlertTemplate from "react-alert-template-basic";
+
+const options = {
+  position: positions.BOTTOM_CENTER,
+  timeout: 5000,
+  transition: transitions.SCALE,
+};
+ReactDOM.render(
+  <React.StrictMode>
+    <Provider store={store}>
+      <AlertProvider template={AlertTemplate} {...options}>
+        <App />
+      </AlertProvider>
+    </Provider>
+  </React.StrictMode>,
+  document.getElementById("root")
+);
+
+
+
+*************************************************************
+File Name: .\frontend\src\store.js 
+*************************************************************
+
+import { configureStore } from "@reduxjs/toolkit";
+import {
+  allUsersReducer,
+  postOfFollowingReducer,
+  userProfileReducer,
+  userReducer,
+} from "./Reducers/User";
+import { likeReducer, myPostsReducer, userPostsReducer } from "./Reducers/Post";
+
+const store = configureStore({
+  reducer: {
+    user: userReducer,
+    postOfFollowing: postOfFollowingReducer,
+    allUsers: allUsersReducer,
+    like: likeReducer,
+    myPosts: myPostsReducer,
+    userProfile: userProfileReducer,
+    userPosts: userPostsReducer,
+  },
+});
+
+export default store;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Actions\Post.js 
+*************************************************************
+
+import axios from "axios";
+
+export const likePost = (id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "likeRequest",
+    });
+
+    const { data } = await axios.get(`/api/v1/post/${id}`);
+    dispatch({
+      type: "likeSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "likeFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const addCommentOnPost = (id, comment) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "addCommentRequest",
+    });
+
+    const { data } = await axios.put(
+      `/api/v1/post/comment/${id}`,
+      {
+        comment,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    dispatch({
+      type: "addCommentSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "addCommentFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const deleteCommentOnPost = (id, commentId) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "deleteCommentRequest",
+    });
+
+    const { data } = await axios.delete(`/api/v1/post/comment/${id}`, {
+      data: { commentId },
+    });
+    dispatch({
+      type: "deleteCommentSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "deleteCommentFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const createNewPost = (caption, image) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "newPostRequest",
+    });
+
+    const { data } = await axios.post(
+      `/api/v1/post/upload`,
+      {
+        caption,
+        image,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    dispatch({
+      type: "newPostSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "newPostFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const updatePost = (caption, id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "updateCaptionRequest",
+    });
+
+    const { data } = await axios.put(
+      `/api/v1/post/${id}`,
+      {
+        caption,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    dispatch({
+      type: "updateCaptionSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "updateCaptionFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const deletePost = (id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "deletePostRequest",
+    });
+
+    const { data } = await axios.delete(`/api/v1/post/${id}`);
+    dispatch({
+      type: "deletePostSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "deletePostFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+
+
+*************************************************************
+File Name: .\frontend\src\Actions\User.js 
+*************************************************************
+
+import axios from "axios";
+
+export const loginUser = (email, password) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "LoginRequest",
+    });
+
+    const { data } = await axios.post(
+      "/api/v1/login",
+      { email, password },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    dispatch({
+      type: "LoginSuccess",
+      payload: data.user,
+    });
+  } catch (error) {
+    dispatch({
+      type: "LoginFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const loadUser = () => async (dispatch) => {
+  try {
+    dispatch({
+      type: "LoadUserRequest",
+    });
+
+    const { data } = await axios.get("/api/v1/me");
+
+    dispatch({
+      type: "LoadUserSuccess",
+      payload: data.user,
+    });
+  } catch (error) {
+    dispatch({
+      type: "LoadUserFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const getFollowingPosts = () => async (dispatch) => {
+  try {
+    dispatch({
+      type: "postOfFollowingRequest",
+    });
+
+    const { data } = await axios.get("/api/v1/posts");
+    dispatch({
+      type: "postOfFollowingSuccess",
+      payload: data.posts,
+    });
+  } catch (error) {
+    dispatch({
+      type: "postOfFollowingFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const getMyPosts = () => async (dispatch) => {
+  try {
+    dispatch({
+      type: "myPostsRequest",
+    });
+
+    const { data } = await axios.get("/api/v1/my/posts");
+    dispatch({
+      type: "myPostsSuccess",
+      payload: data.posts,
+    });
+  } catch (error) {
+    dispatch({
+      type: "myPostsFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const getAllUsers =
+  (name = "") =>
+  async (dispatch) => {
+    try {
+      dispatch({
+        type: "allUsersRequest",
+      });
+
+      const { data } = await axios.get(`/api/v1/users?name=${name}`);
+      dispatch({
+        type: "allUsersSuccess",
+        payload: data.users,
+      });
+    } catch (error) {
+      dispatch({
+        type: "allUsersFailure",
+        payload: error.response.data.message,
+      });
+    }
+  };
+
+export const logoutUser = () => async (dispatch) => {
+  try {
+    dispatch({
+      type: "LogoutUserRequest",
+    });
+
+    await axios.get("/api/v1/logout");
+
+    dispatch({
+      type: "LogoutUserSuccess",
+    });
+  } catch (error) {
+    dispatch({
+      type: "LogoutUserFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const registerUser =
+  (name, email, password, avatar) => async (dispatch) => {
+    try {
+      dispatch({
+        type: "RegisterRequest",
+      });
+
+      const { data } = await axios.post(
+        "/api/v1/register",
+        { name, email, password, avatar },
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      dispatch({
+        type: "RegisterSuccess",
+        payload: data.user,
+      });
+    } catch (error) {
+      dispatch({
+        type: "RegisterFailure",
+        payload: error.response.data.message,
+      });
+    }
+  };
+
+export const updateProfile = (name, email, avatar) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "updateProfileRequest",
+    });
+
+    const { data } = await axios.put(
+      "/api/v1/update/profile",
+      { name, email, avatar },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    dispatch({
+      type: "updateProfileSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "updateProfileFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const updatePassword =
+  (oldPassword, newPassword) => async (dispatch) => {
+    try {
+      dispatch({
+        type: "updatePasswordRequest",
+      });
+
+      const { data } = await axios.put(
+        "/api/v1/update/password",
+        { oldPassword, newPassword },
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      dispatch({
+        type: "updatePasswordSuccess",
+        payload: data.message,
+      });
+    } catch (error) {
+      dispatch({
+        type: "updatePasswordFailure",
+        payload: error.response.data.message,
+      });
+    }
+  };
+
+export const deleteMyProfile = () => async (dispatch) => {
+  try {
+    dispatch({
+      type: "deleteProfileRequest",
+    });
+
+    const { data } = await axios.delete("/api/v1/delete/me");
+
+    dispatch({
+      type: "deleteProfileSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "deleteProfileFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const forgotPassword = (email) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "forgotPasswordRequest",
+    });
+
+    const { data } = await axios.post(
+      "/api/v1/forgot/password",
+      {
+        email,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    dispatch({
+      type: "forgotPasswordSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "forgotPasswordFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const resetPassword = (token, password) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "resetPasswordRequest",
+    });
+
+    const { data } = await axios.put(
+      `/api/v1/password/reset/${token}`,
+      {
+        password,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    dispatch({
+      type: "resetPasswordSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "resetPasswordFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const getUserPosts = (id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "userPostsRequest",
+    });
+
+    const { data } = await axios.get(`/api/v1/userposts/${id}`);
+    dispatch({
+      type: "userPostsSuccess",
+      payload: data.posts,
+    });
+  } catch (error) {
+    dispatch({
+      type: "userPostsFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const getUserProfile = (id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "userProfileRequest",
+    });
+
+    const { data } = await axios.get(`/api/v1/user/${id}`);
+    dispatch({
+      type: "userProfileSuccess",
+      payload: data.user,
+    });
+  } catch (error) {
+    dispatch({
+      type: "userProfileFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+export const followAndUnfollowUser = (id) => async (dispatch) => {
+  try {
+    dispatch({
+      type: "followUserRequest",
+    });
+
+    const { data } = await axios.get(`/api/v1/follow/${id}`);
+    dispatch({
+      type: "followUserSuccess",
+      payload: data.message,
+    });
+  } catch (error) {
+    dispatch({
+      type: "followUserFailure",
+      payload: error.response.data.message,
+    });
+  }
+};
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Account\Account.css 
+*************************************************************
+
+.account {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  height: 92vh;
+}
+
+.accountleft {
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+.accountright {
+  padding: 2vmax;
+  box-sizing: border-box;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.accountright img:hover {
+  transform: scale(1.1);
+}
+
+.accountright img {
+  transition: all 0.5s;
+}
+
+.accountright > h5 {
+  margin: 2vmax;
+}
+
+.accountright > a {
+  color: rgb(73, 73, 73);
+  text-decoration: none;
+  font: 100 1.2rem "Roboto";
+  text-align: center;
+  margin-top: 2vmax;
+  padding: 0.5vmax 1vmax;
+  transition: all 0.5s;
+}
+
+.accountright > a:hover {
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.253);
+}
+.accountright > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 1vmax;
+}
+
+.accountright > div > button:hover {
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.253);
+}
+.accountright > div > button {
+  border: none;
+  background-color: white;
+  cursor: pointer;
+  transition: all 0.5s;
+  padding: 0.5vmax 1vmax;
+}
+
+@media screen and (max-width: 600px) {
+  .account {
+    grid-template-columns: 2fr 1fr;
+  }
+
+  .accountleft {
+    padding: 0;
+    min-height: 90vh;
+  }
+
+  .accountright > a {
+    font: 100 1rem "Roboto";
+    margin-top: 6vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Account\Account.jsx 
+*************************************************************
+
+import { Avatar, Button, Dialog, Typography } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useAlert } from "react-alert";
+import { useDispatch, useSelector } from "react-redux";
+import { Link } from "react-router-dom";
+import { deleteMyProfile, getMyPosts, logoutUser } from "../../Actions/User";
+import Loader from "../Loader/Loader";
+import Post from "../Post/Post";
+import User from "../User/User";
+import "./Account.css";
+
+const Account = () => {
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const { user, loading: userLoading } = useSelector((state) => state.user);
+  const { loading, error, posts } = useSelector((state) => state.myPosts);
+  const {
+    error: likeError,
+    message,
+    loading: deleteLoading,
+  } = useSelector((state) => state.like);
+
+  const [followersToggle, setFollowersToggle] = useState(false);
+
+  const [followingToggle, setFollowingToggle] = useState(false);
+  const logoutHandler = () => {
+    dispatch(logoutUser());
+    alert.success("Logged out successfully");
+  };
+
+  const deleteProfileHandler = async () => {
+    await dispatch(deleteMyProfile());
+    dispatch(logoutUser());
+  };
+
+  useEffect(() => {
+    dispatch(getMyPosts());
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (likeError) {
+      alert.error(likeError);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, message, likeError, dispatch]);
+
+  return loading === true || userLoading === true ? (
+    <Loader />
+  ) : (
+    <div className="account">
+      <div className="accountleft">
+        {posts && posts.length > 0 ? (
+          posts.map((post) => (
+            <Post
+              key={post._id}
+              postId={post._id}
+              caption={post.caption}
+              postImage={post.image.url}
+              likes={post.likes}
+              comments={post.comments}
+              ownerImage={post.owner.avatar.url}
+              ownerName={post.owner.name}
+              ownerId={post.owner._id}
+              isAccount={true}
+              isDelete={true}
+            />
+          ))
+        ) : (
+          <Typography variant="h6">You have not made any post</Typography>
+        )}
+      </div>
+      <div className="accountright">
+        <Avatar
+          src={user.avatar.url}
+          sx={{ height: "8vmax", width: "8vmax" }}
+        />
+
+        <Typography variant="h5">{user.name}</Typography>
+
+        <div>
+          <button onClick={() => setFollowersToggle(!followersToggle)}>
+            <Typography>Followers</Typography>
+          </button>
+          <Typography>{user.followers.length}</Typography>
+        </div>
+
+        <div>
+          <button onClick={() => setFollowingToggle(!followingToggle)}>
+            <Typography>Following</Typography>
+          </button>
+          <Typography>{user.following.length}</Typography>
+        </div>
+
+        <div>
+          <Typography>Posts</Typography>
+          <Typography>{user.posts.length}</Typography>
+        </div>
+
+        <Button variant="contained" onClick={logoutHandler}>
+          Logout
+        </Button>
+
+        <Link to="/update/profile">Edit Profile</Link>
+        <Link to="/update/password">Change Password</Link>
+
+        <Button
+          variant="text"
+          style={{ color: "red", margin: "2vmax" }}
+          onClick={deleteProfileHandler}
+          disabled={deleteLoading}
+        >
+          Delete My Profile
+        </Button>
+
+        <Dialog
+          open={followersToggle}
+          onClose={() => setFollowersToggle(!followersToggle)}
+        >
+          <div className="DialogBox">
+            <Typography variant="h4">Followers</Typography>
+
+            {user && user.followers.length > 0 ? (
+              user.followers.map((follower) => (
+                <User
+                  key={follower._id}
+                  userId={follower._id}
+                  name={follower.name}
+                  avatar={follower.avatar.url}
+                />
+              ))
+            ) : (
+              <Typography style={{ margin: "2vmax" }}>
+                You have no followers
+              </Typography>
+            )}
+          </div>
+        </Dialog>
+
+        <Dialog
+          open={followingToggle}
+          onClose={() => setFollowingToggle(!followingToggle)}
+        >
+          <div className="DialogBox">
+            <Typography variant="h4">Following</Typography>
+
+            {user && user.following.length > 0 ? (
+              user.following.map((follow) => (
+                <User
+                  key={follow._id}
+                  userId={follow._id}
+                  name={follow.name}
+                  avatar={follow.avatar.url}
+                />
+              ))
+            ) : (
+              <Typography style={{ margin: "2vmax" }}>
+                You're not following anyone
+              </Typography>
+            )}
+          </div>
+        </Dialog>
+      </div>
+    </div>
+  );
+};
+
+export default Account;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\CommentCard\CommentCard.css 
+*************************************************************
+
+.commentUser {
+  display: flex;
+  align-items: center;
+  color: rgba(0, 0, 0, 0.507);
+}
+
+.commentUser > a {
+  display: flex;
+  text-decoration: none;
+  color: rgb(0, 0, 0);
+  align-items: center;
+  align-self: flex-start;
+  transition: all 0.5s;
+}
+.commentUser img {
+  height: 3vmax;
+  width: 3vmax;
+  margin: 1vmax;
+  border-radius: 100%;
+  border: 3px solid rgb(255, 201, 201);
+}
+
+.commentUser > a:hover {
+  transform: translateY(-10px);
+}
+
+.commentUser > button {
+  color: red;
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\CommentCard\CommentCard.jsx 
+*************************************************************
+
+import { Button, Typography } from "@mui/material";
+import React from "react";
+import { Link } from "react-router-dom";
+import "./CommentCard.css";
+import { Delete } from "@mui/icons-material";
+import { useDispatch, useSelector } from "react-redux";
+import { deleteCommentOnPost } from "../../Actions/Post";
+import { getFollowingPosts, getMyPosts } from "../../Actions/User";
+
+const CommentCard = ({
+  userId,
+  name,
+  avatar,
+  comment,
+  commentId,
+  postId,
+  isAccount,
+}) => {
+  const { user } = useSelector((state) => state.user);
+  const dispatch = useDispatch();
+
+  const deleteCommentHandle = () => {
+    dispatch(deleteCommentOnPost(postId, commentId));
+
+    if (isAccount) {
+      dispatch(getMyPosts());
+    } else {
+      dispatch(getFollowingPosts());
+    }
+  };
+
+  return (
+    <div className="commentUser">
+      <Link to={`/user/${userId}`}>
+        <img src={avatar} alt={name} />
+        <Typography style={{ minWidth: "6vmax" }}>{name}</Typography>
+      </Link>
+      <Typography>{comment}</Typography>
+
+      {isAccount ? (
+        <Button onClick={deleteCommentHandle}>
+          <Delete />
+        </Button>
+      ) : userId === user._id ? (
+        <Button onClick={deleteCommentHandle}>
+          <Delete />
+        </Button>
+      ) : null}
+    </div>
+  );
+};
+
+export default CommentCard;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\ForgotPassword\ForgotPassword.css 
+*************************************************************
+
+.forgotPassword {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.forgotPasswordForm {
+  background-color: white;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.forgotPasswordInputs {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+
+@media screen and (max-width: 600px) {
+  .forgotPasswordForm {
+    width: 100%;
+  }
+
+  .forgotPasswordInputs {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\ForgotPassword\ForgotPassword.jsx 
+*************************************************************
+
+import { Button, Typography } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useAlert } from "react-alert";
+import { useDispatch, useSelector } from "react-redux";
+import { forgotPassword } from "../../Actions/User";
+import "./ForgotPassword.css";
+const ForgotPassword = () => {
+  const [email, setEmail] = useState("");
+
+  const dispatch = useDispatch();
+  const alert = useAlert();
+  const { error, loading, message } = useSelector((state) => state.like);
+
+  const submitHandler = (e) => {
+    e.preventDefault();
+    dispatch(forgotPassword(email));
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, dispatch, message]);
+  return (
+    <div className="forgotPassword">
+      <form className="forgotPasswordForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <input
+          type="email"
+          placeholder="Email"
+          required
+          className="forgotPasswordInputs"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+
+        <Button disabled={loading} type="submit">
+          Send Token
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default ForgotPassword;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Header\Header.css 
+*************************************************************
+
+.header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.header > a {
+  width: 2vmax;
+  height: 2vmax;
+  margin: 1vmax 4vmax;
+}
+.header > a > svg {
+  font-size: 2vmax;
+  transition: all 0.5s;
+  color: rgba(0, 0, 0, 0.445);
+}
+
+.header > a > svg:hover {
+  color: black;
+  transform: scale(1.2);
+}
+
+@media screen and (max-width: 600px) {
+  .header > a {
+    width: 8vw;
+    height: 8vw;
+    margin: 2vw 8vw;
+  }
+  .header > a > svg {
+    font-size: 8vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Header\Header.jsx 
+*************************************************************
+
+import React, { useState } from "react";
+import "./Header.css";
+import { Link } from "react-router-dom";
+import {
+  Home,
+  HomeOutlined,
+  Add,
+  AddOutlined,
+  SearchOutlined,
+  Search,
+  AccountCircle,
+  AccountCircleOutlined,
+} from "@mui/icons-material";
+
+const Header = () => {
+  const [tab, setTab] = useState(window.location.pathname);
+  return (
+    <div className="header">
+      <Link to="/" onClick={() => setTab("/")}>
+        {tab === "/" ? <Home style={{ color: "black" }} /> : <HomeOutlined />}
+      </Link>
+
+      <Link to="/newpost" onClick={() => setTab("/newpost")}>
+        {tab === "/newpost" ? (
+          <Add style={{ color: "black" }} />
+        ) : (
+          <AddOutlined />
+        )}
+      </Link>
+
+      <Link to="/search" onClick={() => setTab("/search")}>
+        {tab === "/search" ? (
+          <Search style={{ color: "black" }} />
+        ) : (
+          <SearchOutlined />
+        )}
+      </Link>
+
+      <Link to="/account" onClick={() => setTab("/account")}>
+        {tab === "/account" ? (
+          <AccountCircle style={{ color: "black" }} />
+        ) : (
+          <AccountCircleOutlined />
+        )}
+      </Link>
+    </div>
+  );
+};
+
+export default Header;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Home\Home.css 
+*************************************************************
+
+.home {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  height: 100vh;
+}
+
+.homeleft {
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+.homeright {
+  padding: 2vmax;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.homeUser {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  color: rgba(0, 0, 0, 0.507);
+  transition: all 0.5s;
+}
+.homeUser > img {
+  height: 3vmax;
+  width: 3vmax;
+  margin: 1vmax;
+  border-radius: 100%;
+  border: 3px solid rgb(255, 201, 201);
+}
+
+.homeUser:hover {
+  transform: translateY(-10px);
+}
+
+@media screen and (max-width: 600px) {
+  .home {
+    grid-template-columns: 2fr 1fr;
+  }
+
+  .homeleft {
+    padding: 0;
+    min-height: 90vh;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Home\Home.jsx 
+*************************************************************
+
+import React, { useEffect } from "react";
+import Post from "../Post/Post";
+import User from "../User/User";
+import "./Home.css";
+import { useDispatch, useSelector } from "react-redux";
+import { getAllUsers, getFollowingPosts } from "../../Actions/User";
+import Loader from "../Loader/Loader";
+import { Typography } from "@mui/material";
+import { useAlert } from "react-alert";
+
+const Home = () => {
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const { loading, posts, error } = useSelector(
+    (state) => state.postOfFollowing
+  );
+
+  const { users, loading: usersLoading } = useSelector(
+    (state) => state.allUsers
+  );
+
+  const { error: likeError, message } = useSelector((state) => state.like);
+
+  useEffect(() => {
+    dispatch(getFollowingPosts());
+    dispatch(getAllUsers());
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (likeError) {
+      alert.error(likeError);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, message, likeError, dispatch]);
+
+  return loading === true || usersLoading === true ? (
+    <Loader />
+  ) : (
+    <div className="home">
+      <div className="homeleft">
+        {posts && posts.length > 0 ? (
+          posts.map((post) => (
+            <Post
+              key={post._id}
+              postId={post._id}
+              caption={post.caption}
+              postImage={post.image.url}
+              likes={post.likes}
+              comments={post.comments}
+              ownerImage={post.owner.avatar.url}
+              ownerName={post.owner.name}
+              ownerId={post.owner._id}
+            />
+          ))
+        ) : (
+          <Typography variant="h6">No posts yet</Typography>
+        )}
+      </div>
+      <div className="homeright">
+        {users && users.length > 0 ? (
+          users.map((user) => (
+            <User
+              key={user._id}
+              userId={user._id}
+              name={user.name}
+              avatar={user.avatar.url}
+            />
+          ))
+        ) : (
+          <Typography>No Users Yet</Typography>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Home;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Loader\Loader.css 
+*************************************************************
+
+.loadingPage {
+  height: 90vh;
+  width: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.loadingCircle {
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 10px solid #ffffff;
+  border-top: 10px solid rgb(34, 34, 34);
+  border-bottom: 10px solid rgb(32, 23, 23);
+  animation: loading 1s linear infinite;
+}
+
+@keyframes loading {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Loader\Loader.jsx 
+*************************************************************
+
+import React from "react";
+import "./Loader.css";
+const Loader = () => {
+  return (
+    <div className="loadingPage">
+      <div className="loadingCircle"></div>
+    </div>
+  );
+};
+
+export default Loader;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Login\Login.css 
+*************************************************************
+
+.login {
+  height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.loginForm {
+  background-color: white;
+  height: 100%;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.loginForm > input {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+.loginForm > a {
+  align-self: flex-end;
+  text-decoration: none;
+  color: rgba(0, 0, 0, 0.342);
+  margin: 2vmax;
+}
+
+@media screen and (max-width: 600px) {
+  .loginForm {
+    width: 100%;
+  }
+
+  .loginForm > input {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+
+  .loginForm > a {
+    align-self: center;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Login\Login.jsx 
+*************************************************************
+
+import React, { useEffect, useState } from "react";
+import "./Login.css";
+import { Typography, Button } from "@mui/material";
+import { Link } from "react-router-dom";
+import { useDispatch, useSelector } from "react-redux";
+import { loginUser } from "../../Actions/User";
+import { useAlert } from "react-alert";
+
+const Login = () => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const { error } = useSelector((state) => state.user);
+  const { message } = useSelector((state) => state.like);
+
+  const loginHandler = (e) => {
+    e.preventDefault();
+
+    dispatch(loginUser(email, password));
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, dispatch, message]);
+
+  return (
+    <div className="login">
+      <form className="loginForm" onSubmit={loginHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <input
+          type="email"
+          placeholder="Email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+
+        <input
+          type="password"
+          placeholder="Password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+
+        <Link to="/forgot/password">
+          <Typography>Forgot Password?</Typography>
+        </Link>
+
+        <Button type="submit">Login</Button>
+
+        <Link to="/register">
+          <Typography>New User?</Typography>
+        </Link>
+      </form>
+    </div>
+  );
+};
+
+export default Login;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\NewPost\NewPost.css 
+*************************************************************
+
+.newPost {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.newPostForm {
+  background-color: white;
+  height: 100%;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.newPostForm > img {
+  width: 100%;
+  object-fit: cover;
+}
+.newPostForm > h3 {
+  margin: 2vmax;
+}
+
+.newPostForm > input[type="text"] {
+  width: 100%;
+  padding: 1vmax;
+  border-radius: 30px;
+  border: none;
+  outline: none;
+  font: 100 1.2rem "Roboto", sans-serif;
+}
+
+.newPostForm > input[type="file"] {
+  border-radius: 30px;
+  margin: 2vmax;
+}
+
+.newPostForm > input[type="file"]::-webkit-file-upload-button {
+  background-color: rgb(38, 63, 173);
+  color: white;
+  width: 100%;
+  padding: 1vmax;
+  border-radius: 30px;
+  border: none;
+  font: 100 1.2rem "Roboto", sans-serif;
+}
+
+@media screen and (max-width: 600px) {
+  .newPostForm {
+    width: 100%;
+  }
+
+  .newPostForm > input {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+  .newPostForm > input[type="file"] {
+    width: 100%;
+  }
+
+  .newPostForm > input[type="file"]::-webkit-file-upload-button {
+    width: 70%;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\NewPost\NewPost.jsx 
+*************************************************************
+
+import { Button, Typography } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useAlert } from "react-alert";
+import { useDispatch, useSelector } from "react-redux";
+import { createNewPost } from "../../Actions/Post";
+import { loadUser } from "../../Actions/User";
+import "./NewPost.css";
+const NewPost = () => {
+  const [image, setImage] = useState(null);
+  const [caption, setCaption] = useState("");
+
+  const { loading, error, message } = useSelector((state) => state.like);
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+
+    const Reader = new FileReader();
+    Reader.readAsDataURL(file);
+
+    Reader.onload = () => {
+      if (Reader.readyState === 2) {
+        setImage(Reader.result);
+      }
+    };
+  };
+
+  const submitHandler = async (e) => {
+    e.preventDefault();
+    await dispatch(createNewPost(caption, image));
+    dispatch(loadUser());
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [dispatch, error, message, alert]);
+
+  return (
+    <div className="newPost">
+      <form className="newPostForm" onSubmit={submitHandler}>
+        <Typography variant="h3">New Post</Typography>
+
+        {image && <img src={image} alt="post" />}
+        <input type="file" accept="image/*" onChange={handleImageChange} />
+        <input
+          type="text"
+          placeholder="Caption..."
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+        />
+        <Button disabled={loading} type="submit">
+          Post
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default NewPost;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\NotFound\NotFound.css 
+*************************************************************
+
+.notFound {
+  height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.notFoundContainer {
+  background-color: white;
+  height: 100%;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.notFoundContainer > svg {
+  font-size: 5vmax;
+}
+
+.notFoundContainer > a {
+  text-decoration: none;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+@media screen and (max-width: 600px) {
+  .notFoundContainer {
+    width: 100%;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\NotFound\NotFound.jsx 
+*************************************************************
+
+import { ErrorOutline } from "@mui/icons-material";
+import { Typography } from "@mui/material";
+import React from "react";
+import { Link } from "react-router-dom";
+import "./NotFound.css";
+
+const NotFound = () => {
+  return (
+    <div className="notFound">
+      <div className="notFoundContainer">
+        <ErrorOutline />
+        <Typography variant="h2" style={{ padding: "2vmax" }}>
+          Page Not Found
+        </Typography>
+
+        <Link to="/">
+          <Typography variant="h5">Go to Home</Typography>
+        </Link>
+      </div>
+    </div>
+  );
+};
+
+export default NotFound;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Post\Post.css 
+*************************************************************
+
+.post {
+  width: 60%;
+  background-color: #fff;
+  border-radius: 5px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+  padding: 0 1vmax 2vmax;
+  margin: 2vmax;
+}
+
+.postHeader {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 1vmax;
+}
+.postHeader > button {
+  border-radius: 100%;
+  color: rgba(0, 0, 0, 0.582);
+}
+
+.post > img {
+  width: 100%;
+}
+
+.postDetails {
+  display: flex;
+  padding: 1vmax;
+}
+
+.postDetails > a {
+  text-decoration: none;
+  color: rgb(0, 0, 0);
+  margin: 1vmax;
+}
+
+.postFooter > button {
+  color: rgba(0, 0, 0, 0.767);
+  margin: 0 1vmax;
+  border-radius: 100%;
+  transition: all 0.3s;
+}
+
+.postFooter > button:hover {
+  transform: translateY(-4px);
+}
+
+.postFooter > button > svg {
+  font-size: 1.7vmax;
+}
+
+.DialogBox {
+  min-width: 500px;
+  height: 100vh;
+  padding: 2vmax;
+}
+.commentForm {
+  display: flex;
+  margin: 1vmax;
+}
+.commentForm > input {
+  width: 100%;
+  padding: 1vmax 2vmax;
+  outline: none;
+  border: 1px solid rgba(0, 0, 0, 0.288);
+  border-radius: 30px 0 0 30px;
+  font: 100 1vmax "Roboto", sans-serif;
+}
+.commentForm > button {
+  border-radius: 0%;
+}
+
+@media screen and (max-width: 600px) {
+  .post {
+    width: 100%;
+    border-radius: 0;
+    box-shadow: none;
+    border: 1px solid rgba(0, 0, 0, 0.068);
+    padding: 0 0 4vw;
+    margin: 0;
+  }
+
+  .postFooter > button > svg {
+    font-size: 8vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Post\Post.jsx 
+*************************************************************
+
+import { Avatar, Button, Typography, Dialog } from "@mui/material";
+import React, { useEffect } from "react";
+import {
+  MoreVert,
+  Favorite,
+  FavoriteBorder,
+  ChatBubbleOutline,
+  DeleteOutline,
+} from "@mui/icons-material";
+import { Link } from "react-router-dom";
+import "./Post.css";
+import { useState } from "react";
+import { useDispatch, useSelector } from "react-redux";
+import {
+  addCommentOnPost,
+  deletePost,
+  likePost,
+  updatePost,
+} from "../../Actions/Post";
+import { getFollowingPosts, getMyPosts, loadUser } from "../../Actions/User";
+import User from "../User/User";
+import CommentCard from "../CommentCard/CommentCard";
+
+const Post = ({
+  postId,
+  caption,
+  postImage,
+  likes = [],
+  comments = [],
+  ownerImage,
+  ownerName,
+  ownerId,
+  isDelete = false,
+  isAccount = false,
+}) => {
+  const [liked, setLiked] = useState(false);
+  const [likesUser, setLikesUser] = useState(false);
+  const [commentValue, setCommentValue] = useState("");
+  const [commentToggle, setCommentToggle] = useState(false);
+  const [captionValue, setCaptionValue] = useState(caption);
+  const [captionToggle, setCaptionToggle] = useState(false);
+
+  const dispatch = useDispatch();
+  const { user } = useSelector((state) => state.user);
+
+  const handleLike = async () => {
+    setLiked(!liked);
+
+    await dispatch(likePost(postId));
+
+    if (isAccount) {
+      dispatch(getMyPosts());
+    } else {
+      dispatch(getFollowingPosts());
+    }
+  };
+
+  const addCommentHandler = async (e) => {
+    e.preventDefault();
+    await dispatch(addCommentOnPost(postId, commentValue));
+
+    if (isAccount) {
+      dispatch(getMyPosts());
+    } else {
+      dispatch(getFollowingPosts());
+    }
+  };
+
+  const updateCaptionHandler = (e) => {
+    e.preventDefault();
+    dispatch(updatePost(captionValue, postId));
+    dispatch(getMyPosts());
+  };
+
+  const deletePostHandler = async () => {
+    await dispatch(deletePost(postId));
+    dispatch(getMyPosts());
+    dispatch(loadUser());
+  };
+
+  useEffect(() => {
+    likes.forEach((item) => {
+      if (item._id === user._id) {
+        setLiked(true);
+      }
+    });
+  }, [likes, user._id]);
+
+  return (
+    <div className="post">
+      <div className="postHeader">
+        {isAccount ? (
+          <Button onClick={() => setCaptionToggle(!captionToggle)}>
+            <MoreVert />
+          </Button>
+        ) : null}
+      </div>
+
+      <img src={postImage} alt="Post" />
+
+      <div className="postDetails">
+        <Avatar
+          src={ownerImage}
+          alt="User"
+          sx={{
+            height: "3vmax",
+            width: "3vmax",
+          }}
+        />
+
+        <Link to={`/user/${ownerId}`}>
+          <Typography fontWeight={700}>{ownerName}</Typography>
+        </Link>
+
+        <Typography
+          fontWeight={100}
+          color="rgba(0, 0, 0, 0.582)"
+          style={{ alignSelf: "center" }}
+        >
+          {caption}
+        </Typography>
+      </div>
+
+      <button
+        style={{
+          border: "none",
+          backgroundColor: "white",
+          cursor: "pointer",
+          margin: "1vmax 2vmax",
+        }}
+        onClick={() => setLikesUser(!likesUser)}
+        disabled={likes.length === 0 ? true : false}
+      >
+        <Typography>{likes.length} Likes</Typography>
+      </button>
+
+      <div className="postFooter">
+        <Button onClick={handleLike}>
+          {liked ? <Favorite style={{ color: "red" }} /> : <FavoriteBorder />}
+        </Button>
+
+        <Button onClick={() => setCommentToggle(!commentToggle)}>
+          <ChatBubbleOutline />
+        </Button>
+
+        {isDelete ? (
+          <Button onClick={deletePostHandler}>
+            <DeleteOutline />
+          </Button>
+        ) : null}
+      </div>
+
+      <Dialog open={likesUser} onClose={() => setLikesUser(!likesUser)}>
+        <div className="DialogBox">
+          <Typography variant="h4">Liked By</Typography>
+
+          {likes.map((like) => (
+            <User
+              key={like._id}
+              userId={like._id}
+              name={like.name}
+              avatar={like.avatar.url}
+            />
+          ))}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={commentToggle}
+        onClose={() => setCommentToggle(!commentToggle)}
+      >
+        <div className="DialogBox">
+          <Typography variant="h4">Comments</Typography>
+
+          <form className="commentForm" onSubmit={addCommentHandler}>
+            <input
+              type="text"
+              value={commentValue}
+              onChange={(e) => setCommentValue(e.target.value)}
+              placeholder="Comment Here..."
+              required
+            />
+
+            <Button type="submit" variant="contained">
+              Add
+            </Button>
+          </form>
+
+          {comments.length > 0 ? (
+            comments.map((item) => (
+              <CommentCard
+                userId={item.user._id}
+                name={item.user.name}
+                avatar={item.user.avatar.url}
+                comment={item.comment}
+                commentId={item._id}
+                key={item._id}
+                postId={postId}
+                isAccount={isAccount}
+              />
+            ))
+          ) : (
+            <Typography>No comments Yet</Typography>
+          )}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={captionToggle}
+        onClose={() => setCaptionToggle(!captionToggle)}
+      >
+        <div className="DialogBox">
+          <Typography variant="h4">Update Caption</Typography>
+
+          <form className="commentForm" onSubmit={updateCaptionHandler}>
+            <input
+              type="text"
+              value={captionValue}
+              onChange={(e) => setCaptionValue(e.target.value)}
+              placeholder="Caption Here..."
+              required
+            />
+
+            <Button type="submit" variant="contained">
+              Update
+            </Button>
+          </form>
+        </div>
+      </Dialog>
+    </div>
+  );
+};
+
+export default Post;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Register\Register.css 
+*************************************************************
+
+.register {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.registerForm {
+  background-color: white;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.registerInputs {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+
+.registerForm > input[type="file"] {
+  border-radius: 30px;
+  margin: 2vmax;
+}
+
+.registerForm > input[type="file"]::-webkit-file-upload-button {
+  background-color: rgb(38, 63, 173);
+  color: white;
+  width: 100%;
+  padding: 1vmax;
+  border-radius: 30px;
+  border: none;
+  font: 100 1.2rem "Roboto", sans-serif;
+}
+
+.registerForm > a {
+  align-self: flex-end;
+  text-decoration: none;
+  color: rgba(0, 0, 0, 0.342);
+  margin: 2vmax;
+}
+
+@media screen and (max-width: 600px) {
+  .registerForm {
+    width: 100%;
+  }
+
+  .registerForm > input {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+
+  .registerForm > input[type="file"] {
+    width: 100%;
+  }
+
+  .registerForm > input[type="file"]::-webkit-file-upload-button {
+    width: 70%;
+  }
+
+  .registerForm > a {
+    align-self: center;
+    text-decoration: none;
+    color: rgba(0, 0, 0, 0.342);
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Register\Register.jsx 
+*************************************************************
+
+import { Avatar, Typography, Button } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useDispatch, useSelector } from "react-redux";
+import { Link } from "react-router-dom";
+import "./Register.css";
+import { registerUser } from "../../Actions/User";
+import { useAlert } from "react-alert";
+
+const Register = () => {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [avatar, setAvatar] = useState("");
+  const [password, setPassword] = useState("");
+
+  const dispatch = useDispatch();
+  const alert = useAlert();
+  const { loading, error } = useSelector((state) => state.user);
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+
+    const Reader = new FileReader();
+    Reader.readAsDataURL(file);
+
+    Reader.onload = () => {
+      if (Reader.readyState === 2) {
+        setAvatar(Reader.result);
+      }
+    };
+  };
+
+  const submitHandler = (e) => {
+    e.preventDefault();
+    dispatch(registerUser(name, email, password, avatar));
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+  }, [dispatch, error, alert]);
+  return (
+    <div className="register">
+      <form className="registerForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <Avatar
+          src={avatar}
+          alt="User"
+          sx={{ height: "10vmax", width: "10vmax" }}
+        />
+
+        <input type="file" accept="image/*" onChange={handleImageChange} />
+
+        <input
+          type="text"
+          value={name}
+          placeholder="Name"
+          className="registerInputs"
+          required
+          onChange={(e) => setName(e.target.value)}
+        />
+
+        <input
+          type="email"
+          placeholder="Email"
+          className="registerInputs"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+
+        <input
+          type="password"
+          className="registerInputs"
+          placeholder="Password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+
+        <Link to="/">
+          <Typography>Already Signed Up? Login Now</Typography>
+        </Link>
+
+        <Button disabled={loading} type="submit">
+          Sign Up
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default Register;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\ResetPassword\ResetPassword.css 
+*************************************************************
+
+.resetPassword {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.resetPasswordForm {
+  background-color: white;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.resetPasswordInputs {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+.resetPasswordForm > a {
+  align-self: flex-end;
+  text-decoration: none;
+  color: rgba(0, 0, 0, 0.342);
+  margin: 2vmax;
+}
+
+@media screen and (max-width: 600px) {
+  .resetPasswordForm {
+    width: 100%;
+  }
+
+  .resetPasswordInputs {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+
+  .resetPasswordForm > a {
+    align-self: center;
+    text-decoration: none;
+    color: rgba(0, 0, 0, 0.342);
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\ResetPassword\ResetPassword.jsx 
+*************************************************************
+
+import { Button, Typography } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useAlert } from "react-alert";
+import { useDispatch, useSelector } from "react-redux";
+import { Link, useParams } from "react-router-dom";
+import { resetPassword } from "../../Actions/User";
+import "./ResetPassword.css";
+const ResetPassword = () => {
+  const [newPassword, setNewPassword] = useState("");
+  const dispatch = useDispatch();
+  const alert = useAlert();
+  const params = useParams();
+  const { error, loading, message } = useSelector((state) => state.like);
+
+  const submitHandler = (e) => {
+    e.preventDefault();
+    dispatch(resetPassword(params.token, newPassword));
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, dispatch, message]);
+
+  return (
+    <div className="resetPassword">
+      <form className="resetPasswordForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <input
+          type="password"
+          placeholder="New Password"
+          required
+          className="updatePasswordInputs"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+        />
+
+        <Link to="/">
+          <Typography>Login</Typography>
+        </Link>
+        <Typography>Or</Typography>
+
+        <Link to="/forgot/password">
+          <Typography>Request Another Token!</Typography>
+        </Link>
+
+        <Button disabled={loading} type="submit">
+          Reset Password
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default ResetPassword;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Search\Search.css 
+*************************************************************
+
+.search {
+  height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.searchForm {
+  background-color: white;
+  height: 100%;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.searchForm > input {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+
+.searchResults {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: 2vmax;
+  box-sizing: border-box;
+  margin: 2vmax;
+}
+
+@media screen and (max-width: 600px) {
+  .searchForm {
+    width: 100%;
+  }
+
+  .searchForm > input {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\Search\Search.jsx 
+*************************************************************
+
+import { Button, Typography } from "@mui/material";
+import React from "react";
+import { useDispatch, useSelector } from "react-redux";
+import { getAllUsers } from "../../Actions/User";
+import User from "../User/User";
+import "./Search.css";
+
+const Search = () => {
+  const [name, setName] = React.useState("");
+
+  const { users, loading } = useSelector((state) => state.allUsers);
+
+  const dispatch = useDispatch();
+  const submitHandler = (e) => {
+    e.preventDefault();
+    dispatch(getAllUsers(name));
+  };
+
+  return (
+    <div className="search">
+      <form className="searchForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <input
+          type="text"
+          value={name}
+          placeholder="Name"
+          required
+          onChange={(e) => setName(e.target.value)}
+        />
+
+        <Button disabled={loading} type="submit">
+          Search
+        </Button>
+
+        <div className="searchResults">
+          {users &&
+            users.map((user) => (
+              <User
+                key={user._id}
+                userId={user._id}
+                name={user.name}
+                avatar={user.avatar.url}
+              />
+            ))}
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export default Search;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\UpdatePassword\UpdatePassword.css 
+*************************************************************
+
+.updatePassword {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.updatePasswordForm {
+  background-color: white;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.updatePasswordInputs {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+
+@media screen and (max-width: 600px) {
+  .updatePasswordForm {
+    width: 100%;
+  }
+
+  .updatePasswordInputs {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\UpdatePassword\UpdatePassword.jsx 
+*************************************************************
+
+import "./UpdatePassword.css";
+import React, { useEffect, useState } from "react";
+import { Typography, Button } from "@mui/material";
+import { useDispatch, useSelector } from "react-redux";
+import { updatePassword } from "../../Actions/User";
+import { useAlert } from "react-alert";
+
+const UpdatePassword = () => {
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const { error, loading, message } = useSelector((state) => state.like);
+
+  const submitHandler = (e) => {
+    e.preventDefault();
+    dispatch(updatePassword(oldPassword, newPassword));
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [dispatch, error, alert, message]);
+
+  return (
+    <div className="updatePassword">
+      <form className="updatePasswordForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <input
+          type="password"
+          placeholder="Old Password"
+          required
+          value={oldPassword}
+          className="updatePasswordInputs"
+          onChange={(e) => setOldPassword(e.target.value)}
+        />
+
+        <input
+          type="password"
+          placeholder="New Password"
+          required
+          className="updatePasswordInputs"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+        />
+
+        <Button disabled={loading} type="submit">
+          Change Password
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default UpdatePassword;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\UpdateProfile\UpdateProfile.css 
+*************************************************************
+
+.updateProfile {
+  min-height: 100vh;
+  background-image: linear-gradient(to right, #fff5bc, #cec1ff);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vmax;
+  box-sizing: border-box;
+}
+
+.updateProfileForm {
+  background-color: white;
+  width: 50%;
+  border-radius: 30px;
+  box-sizing: border-box;
+  padding: 2vmax;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.updateProfileInputs {
+  box-sizing: border-box;
+  padding: 1vmax 2vmax;
+  width: 80%;
+  border-radius: 40px;
+  border: 1px solid #ccc;
+  margin: 2vmax;
+  font: 100 1.2rem "Roboto", sans-serif;
+  outline: none;
+}
+
+.updateProfileForm > input[type="file"] {
+  border-radius: 30px;
+  margin: 2vmax;
+}
+
+.updateProfileForm > input[type="file"]::-webkit-file-upload-button {
+  background-color: rgb(38, 63, 173);
+  color: white;
+  width: 100%;
+  padding: 1vmax;
+  border-radius: 30px;
+  border: none;
+  font: 100 1.2rem "Roboto", sans-serif;
+  cursor: pointer;
+}
+
+@media screen and (max-width: 600px) {
+  .updateProfileForm {
+    width: 100%;
+  }
+
+  .updateProfileForm > input {
+    padding: 4vw 8vw;
+    margin: 2vmax;
+    font: 100 1.2rem "Roboto", sans-serif;
+    margin: 4vw;
+  }
+
+  .updateProfileForm > input[type="file"] {
+    width: 100%;
+  }
+
+  .updateProfileForm > input[type="file"]::-webkit-file-upload-button {
+    width: 70%;
+  }
+}
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\UpdateProfile\UpdateProfile.jsx 
+*************************************************************
+
+import { Avatar, Typography, Button } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useDispatch, useSelector } from "react-redux";
+import "./UpdateProfile.css";
+import { loadUser, updateProfile } from "../../Actions/User";
+import { useAlert } from "react-alert";
+import Loader from "../Loader/Loader";
+
+const UpdateProfile = () => {
+  const { loading, error, user } = useSelector((state) => state.user);
+  const {
+    loading: updateLoading,
+    error: updateError,
+    message,
+  } = useSelector((state) => state.like);
+
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+  const [avatar, setAvatar] = useState("");
+  const [avatarPrev, setAvatarPrev] = useState(user.avatar.url);
+
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+
+    const Reader = new FileReader();
+    Reader.readAsDataURL(file);
+
+    Reader.onload = () => {
+      if (Reader.readyState === 2) {
+        setAvatarPrev(Reader.result);
+
+        setAvatar(Reader.result);
+      }
+    };
+  };
+
+  const submitHandler = async (e) => {
+    e.preventDefault();
+    await dispatch(updateProfile(name, email, avatar));
+    dispatch(loadUser());
+  };
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (updateError) {
+      alert.error(updateError);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [dispatch, error, alert, updateError, message]);
+  return loading ? (
+    <Loader />
+  ) : (
+    <div className="updateProfile">
+      <form className="updateProfileForm" onSubmit={submitHandler}>
+        <Typography variant="h3" style={{ padding: "2vmax" }}>
+          Social Aap
+        </Typography>
+
+        <Avatar
+          src={avatarPrev}
+          alt="User"
+          sx={{ height: "10vmax", width: "10vmax" }}
+        />
+
+        <input type="file" accept="image/*" onChange={handleImageChange} />
+
+        <input
+          type="text"
+          value={name}
+          placeholder="Name"
+          className="updateProfileInputs"
+          required
+          onChange={(e) => setName(e.target.value)}
+        />
+
+        <input
+          type="email"
+          placeholder="Email"
+          className="updateProfileInputs"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+
+        <Button disabled={updateLoading} type="submit">
+          Update
+        </Button>
+      </form>
+    </div>
+  );
+};
+
+export default UpdateProfile;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\User\User.jsx 
+*************************************************************
+
+import { Typography } from "@mui/material";
+import React from "react";
+import { Link } from "react-router-dom";
+const User = ({ userId, name, avatar }) => {
+  return (
+    <Link to={`/user/${userId}`} className="homeUser">
+      <img src={avatar} alt={name} />
+      <Typography>{name}</Typography>
+    </Link>
+  );
+};
+
+export default User;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Components\UserProfile\UserProfile.jsx 
+*************************************************************
+
+import { Avatar, Button, Dialog, Typography } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import { useAlert } from "react-alert";
+import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router-dom";
+import {
+  followAndUnfollowUser,
+  getUserPosts,
+  getUserProfile,
+} from "../../Actions/User";
+import Loader from "../Loader/Loader";
+import Post from "../Post/Post";
+import User from "../User/User";
+
+const UserProfile = () => {
+  const dispatch = useDispatch();
+  const alert = useAlert();
+
+  const {
+    user,
+    loading: userLoading,
+    error: userError,
+  } = useSelector((state) => state.userProfile);
+
+  const { user: me } = useSelector((state) => state.user);
+  const { loading, error, posts } = useSelector((state) => state.userPosts);
+  const {
+    error: followError,
+    message,
+    loading: followLoading,
+  } = useSelector((state) => state.like);
+
+  const params = useParams();
+  const [followersToggle, setFollowersToggle] = useState(false);
+  const [followingToggle, setFollowingToggle] = useState(false);
+  const [following, setFollowing] = useState(false);
+  const [myProfile, setMyProfile] = useState(false);
+
+  const followHandler = async () => {
+    setFollowing(!following);
+    await dispatch(followAndUnfollowUser(user._id));
+    dispatch(getUserProfile(params.id));
+  };
+
+  useEffect(() => {
+    dispatch(getUserPosts(params.id));
+    dispatch(getUserProfile(params.id));
+  }, [dispatch, params.id]);
+
+  useEffect(() => {
+    if (me._id === params.id) {
+      setMyProfile(true);
+    }
+    if (user) {
+      user.followers.forEach((item) => {
+        if (item._id === me._id) {
+          setFollowing(true);
+        } else {
+          setFollowing(false);
+        }
+      });
+    }
+  }, [user, me._id, params.id]);
+
+  useEffect(() => {
+    if (error) {
+      alert.error(error);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (followError) {
+      alert.error(followError);
+      dispatch({ type: "clearErrors" });
+    }
+
+    if (userError) {
+      alert.error(userError);
+      dispatch({ type: "clearErrors" });
+    }
+    if (message) {
+      alert.success(message);
+      dispatch({ type: "clearMessage" });
+    }
+  }, [alert, error, message, followError, userError, dispatch]);
+
+  return loading === true || userLoading === true ? (
+    <Loader />
+  ) : (
+    <div className="account">
+      <div className="accountleft">
+        {posts && posts.length > 0 ? (
+          posts.map((post) => (
+            <Post
+              key={post._id}
+              postId={post._id}
+              caption={post.caption}
+              postImage={post.image.url}
+              likes={post.likes}
+              comments={post.comments}
+              ownerImage={post.owner.avatar.url}
+              ownerName={post.owner.name}
+              ownerId={post.owner._id}
+            />
+          ))
+        ) : (
+          <Typography variant="h6">User has not made any post</Typography>
+        )}
+      </div>
+      <div className="accountright">
+        {user && (
+          <>
+            <Avatar
+              src={user.avatar.url}
+              sx={{ height: "8vmax", width: "8vmax" }}
+            />
+
+            <Typography variant="h5">{user.name}</Typography>
+
+            <div>
+              <button onClick={() => setFollowersToggle(!followersToggle)}>
+                <Typography>Followers</Typography>
+              </button>
+              <Typography>{user.followers.length}</Typography>
+            </div>
+
+            <div>
+              <button onClick={() => setFollowingToggle(!followingToggle)}>
+                <Typography>Following</Typography>
+              </button>
+              <Typography>{user.following.length}</Typography>
+            </div>
+
+            <div>
+              <Typography>Posts</Typography>
+              <Typography>{user.posts.length}</Typography>
+            </div>
+
+            {myProfile ? null : (
+              <Button
+                variant="contained"
+                style={{ background: following ? "red" : "" }}
+                onClick={followHandler}
+                disabled={followLoading}
+              >
+                {following ? "Unfollow" : "Follow"}
+              </Button>
+            )}
+          </>
+        )}
+        <Dialog
+          open={followersToggle}
+          onClose={() => setFollowersToggle(!followersToggle)}
+        >
+          <div className="DialogBox">
+            <Typography variant="h4">Followers</Typography>
+
+            {user && user.followers.length > 0 ? (
+              user.followers.map((follower) => (
+                <User
+                  key={follower._id}
+                  userId={follower._id}
+                  name={follower.name}
+                  avatar={follower.avatar.url}
+                />
+              ))
+            ) : (
+              <Typography style={{ margin: "2vmax" }}>
+                You have no followers
+              </Typography>
+            )}
+          </div>
+        </Dialog>
+
+        <Dialog
+          open={followingToggle}
+          onClose={() => setFollowingToggle(!followingToggle)}
+        >
+          <div className="DialogBox">
+            <Typography variant="h4">Following</Typography>
+
+            {user && user.following.length > 0 ? (
+              user.following.map((follow) => (
+                <User
+                  key={follow._id}
+                  userId={follow._id}
+                  name={follow.name}
+                  avatar={follow.avatar.url}
+                />
+              ))
+            ) : (
+              <Typography style={{ margin: "2vmax" }}>
+                You're not following anyone
+              </Typography>
+            )}
+          </div>
+        </Dialog>
+      </div>
+    </div>
+  );
+};
+
+export default UserProfile;
+
+
+
+*************************************************************
+File Name: .\frontend\src\Reducers\Post.js 
+*************************************************************
+
+import { createReducer } from "@reduxjs/toolkit";
+
+const initialState = {};
+
+export const likeReducer = createReducer(initialState, {
+  likeRequest: (state) => {
+    state.loading = true;
+  },
+  likeSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  likeFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  addCommentRequest: (state) => {
+    state.loading = true;
+  },
+  addCommentSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  addCommentFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  deleteCommentRequest: (state) => {
+    state.loading = true;
+  },
+  deleteCommentSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  deleteCommentFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  newPostRequest: (state) => {
+    state.loading = true;
+  },
+  newPostSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  newPostFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  updateCaptionRequest: (state) => {
+    state.loading = true;
+  },
+  updateCaptionSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  updateCaptionFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  deletePostRequest: (state) => {
+    state.loading = true;
+  },
+  deletePostSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  deletePostFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  updateProfileRequest: (state) => {
+    state.loading = true;
+  },
+  updateProfileSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  updateProfileFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  updatePasswordRequest: (state) => {
+    state.loading = true;
+  },
+  updatePasswordSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  updatePasswordFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  deleteProfileRequest: (state) => {
+    state.loading = true;
+  },
+  deleteProfileSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  deleteProfileFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  forgotPasswordRequest: (state) => {
+    state.loading = true;
+  },
+  forgotPasswordSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  forgotPasswordFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  resetPasswordRequest: (state) => {
+    state.loading = true;
+  },
+  resetPasswordSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  resetPasswordFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+
+  followUserRequest: (state) => {
+    state.loading = true;
+  },
+  followUserSuccess: (state, action) => {
+    state.loading = false;
+    state.message = action.payload;
+  },
+  followUserFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+  clearMessage: (state) => {
+    state.message = null;
+  },
+});
+
+export const myPostsReducer = createReducer(initialState, {
+  myPostsRequest: (state) => {
+    state.loading = true;
+  },
+  myPostsSuccess: (state, action) => {
+    state.loading = false;
+    state.posts = action.payload;
+  },
+  myPostsFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+export const userPostsReducer = createReducer(initialState, {
+  userPostsRequest: (state) => {
+    state.loading = true;
+  },
+  userPostsSuccess: (state, action) => {
+    state.loading = false;
+    state.posts = action.payload;
+  },
+  userPostsFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+
+
+*************************************************************
+File Name: .\frontend\src\Reducers\User.js 
+*************************************************************
+
+import { createReducer } from "@reduxjs/toolkit";
+const initialState = {};
+
+export const userReducer = createReducer(initialState, {
+  LoginRequest: (state) => {
+    state.loading = true;
+  },
+  LoginSuccess: (state, action) => {
+    state.loading = false;
+    state.user = action.payload;
+    state.isAuthenticated = true;
+  },
+  LoginFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+    state.isAuthenticated = false;
+  },
+
+  RegisterRequest: (state) => {
+    state.loading = true;
+  },
+  RegisterSuccess: (state, action) => {
+    state.loading = false;
+    state.user = action.payload;
+    state.isAuthenticated = true;
+  },
+  RegisterFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+    state.isAuthenticated = false;
+  },
+
+  LoadUserRequest: (state) => {
+    state.loading = true;
+  },
+  LoadUserSuccess: (state, action) => {
+    state.loading = false;
+    state.user = action.payload;
+    state.isAuthenticated = true;
+  },
+  LoadUserFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+    state.isAuthenticated = false;
+  },
+
+  LogoutUserRequest: (state) => {
+    state.loading = true;
+  },
+  LogoutUserSuccess: (state) => {
+    state.loading = false;
+    state.user = null;
+    state.isAuthenticated = false;
+  },
+  LogoutUserFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+    state.isAuthenticated = true;
+  },
+
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+export const postOfFollowingReducer = createReducer(initialState, {
+  postOfFollowingRequest: (state) => {
+    state.loading = true;
+  },
+  postOfFollowingSuccess: (state, action) => {
+    state.loading = false;
+    state.posts = action.payload;
+  },
+  postOfFollowingFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+export const allUsersReducer = createReducer(initialState, {
+  allUsersRequest: (state) => {
+    state.loading = true;
+  },
+  allUsersSuccess: (state, action) => {
+    state.loading = false;
+    state.users = action.payload;
+  },
+  allUsersFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+export const userProfileReducer = createReducer(initialState, {
+  userProfileRequest: (state) => {
+    state.loading = true;
+  },
+  userProfileSuccess: (state, action) => {
+    state.loading = false;
+    state.user = action.payload;
+  },
+  userProfileFailure: (state, action) => {
+    state.loading = false;
+    state.error = action.payload;
+  },
+  clearErrors: (state) => {
+    state.error = null;
+  },
+});
+
+
+
